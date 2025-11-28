@@ -17,6 +17,11 @@ The Multiplication Facts Trainer is a native Win32 (C++17) desktop app that dril
 2. Build either the Debug or Release x64 configuration. The project uses the static runtime (`/MT` variants) and raw Win32 APIs only.
 3. Run the produced `MultiplicationFactsTrainer.exe` from the IDE or the output folder.
 
+### CI and releases
+- GitHub Actions builds the Release x64 executable on `windows-latest` for every tag that starts with `v` (for example, `v1.0.0`).
+- Tagging a commit automatically publishes a GitHub Release with the zipped `MultiplicationFactsTrainer.exe` attached as a download.
+- You can also run the workflow manually from the Actions tab (workflow_dispatch) to produce a downloadable artifact from any branch.
+
 ### Usage notes
 - The answer box is read-only and disabled until you click **Show Answer** (or press Space/Enter).
 - After rating a card, the app automatically loads the next one; when you reach the end of the shuffled deck it restarts from the beginning.
