@@ -26,11 +26,14 @@ constexpr int HOTKEY_ID_RATE_MEH = 303;
 constexpr int HOTKEY_ID_RATE_GOOD = 304;
 constexpr int HOTKEY_ID_EXIT = 305;
 
+constexpr UINT_PTR TIMER_ID_NEXT_CARD = 400;
+
 struct Card {
     int lhs;
     int rhs;
     std::wstring question;
     std::wstring answer;
+    std::chrono::system_clock::time_point nextDue;
 };
 
 enum class Rating { Bad, Meh, Good };
@@ -89,10 +92,67 @@ Card& CurrentCard() {
     return g_state.cards[g_state.currentCardIndex % g_state.cards.size()];
 }
 
+std::chrono::system_clock::duration DelayForRating(Rating rating) {
+    using namespace std::chrono;
+    switch (rating) {
+    case Rating::Bad:
+        return minutes(1);
+    case Rating::Meh:
+        return minutes(5);
+    case Rating::Good:
+        return hours(24);
+    }
+    return minutes(1);
+}
+
+size_t FindNextDueCardIndex() {
+    if (g_state.cards.empty()) {
+        return 0;
+    }
+
+    size_t bestIndex = 0;
+    auto bestTime = g_state.cards[0].nextDue;
+    for (size_t i = 1; i < g_state.cards.size(); ++i) {
+        if (g_state.cards[i].nextDue < bestTime) {
+            bestTime = g_state.cards[i].nextDue;
+            bestIndex = i;
+        }
+    }
+    return bestIndex;
+}
+
 void EnableRatingButtons(BOOL enabled) {
     EnableWindow(g_state.hBtnGood, enabled);
     EnableWindow(g_state.hBtnMeh, enabled);
     EnableWindow(g_state.hBtnBad, enabled);
+}
+
+void ScheduleNextCardDisplay(HWND hwnd) {
+    if (g_state.cards.empty()) {
+        return;
+    }
+
+    g_state.currentCardIndex = FindNextDueCardIndex();
+    auto now = std::chrono::system_clock::now();
+    auto delay = g_state.cards[g_state.currentCardIndex].nextDue - now;
+    if (delay <= std::chrono::system_clock::duration::zero()) {
+        ShowCurrentQuestion();
+        return;
+    }
+
+    UINT delayMs = static_cast<UINT>(std::chrono::duration_cast<std::chrono::milliseconds>(delay).count());
+    if (delayMs == 0) {
+        delayMs = 1;
+    }
+
+    SetWindowTextW(g_state.hTopEdit, L"Waiting for the next review interval...");
+    SetWindowTextW(g_state.hBottomEdit, L"");
+    EnableWindow(g_state.hBottomEdit, FALSE);
+    g_state.answerVisible = false;
+    EnableWindow(g_state.hBtnShowAnswer, FALSE);
+    EnableRatingButtons(FALSE);
+    KillTimer(hwnd, TIMER_ID_NEXT_CARD);
+    SetTimer(hwnd, TIMER_ID_NEXT_CARD, delayMs, nullptr);
 }
 
 void ShowCurrentQuestion() {
@@ -105,6 +165,7 @@ void ShowCurrentQuestion() {
     SetWindowTextW(g_state.hBottomEdit, L"");
     EnableWindow(g_state.hBottomEdit, FALSE);
     g_state.answerVisible = false;
+    EnableWindow(g_state.hBtnShowAnswer, TRUE);
     EnableRatingButtons(FALSE);
 }
 
@@ -121,24 +182,18 @@ void RevealAnswer() {
     SetFocus(g_state.hBtnGood);
 }
 
-void AdvanceToNextCard() {
-    if (g_state.cards.empty()) {
-        return;
-    }
-    ++g_state.currentCardIndex;
-    if (g_state.currentCardIndex >= g_state.cards.size()) {
-        MessageBoxW(nullptr, L"Reached end of deck. Restarting from the beginning.", L"Deck", MB_OK | MB_ICONINFORMATION);
-        g_state.currentCardIndex = 0;
-    }
-    ShowCurrentQuestion();
+void RescheduleCurrentCard(Rating rating) {
+    auto delay = DelayForRating(rating);
+    CurrentCard().nextDue = std::chrono::system_clock::now() + delay;
 }
 
-void RateCurrentCard(Rating rating) {
+void RateCurrentCard(HWND hwnd, Rating rating) {
     if (!g_state.answerVisible) {
         return;
     }
     AppendRatingToLog(g_state.currentCardIndex, rating);
-    AdvanceToNextCard();
+    RescheduleCurrentCard(rating);
+    ScheduleNextCardDisplay(hwnd);
 }
 
 void InitializeCards() {
@@ -152,6 +207,7 @@ void InitializeCards() {
             card.rhs = rhs;
             card.question = BuildQuestionText(lhs, rhs);
             card.answer = BuildAnswerText(lhs, rhs);
+            card.nextDue = std::chrono::system_clock::now();
             g_state.cards.push_back(card);
         }
     }
@@ -290,13 +346,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             RevealAnswer();
             break;
         case ID_BTN_GOOD:
-            RateCurrentCard(Rating::Good);
+            RateCurrentCard(hwnd, Rating::Good);
             break;
         case ID_BTN_MEH:
-            RateCurrentCard(Rating::Meh);
+            RateCurrentCard(hwnd, Rating::Meh);
             break;
         case ID_BTN_BAD:
-            RateCurrentCard(Rating::Bad);
+            RateCurrentCard(hwnd, Rating::Bad);
             break;
         }
         break;
@@ -308,17 +364,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             RevealAnswer();
             break;
         case HOTKEY_ID_RATE_BAD:
-            RateCurrentCard(Rating::Bad);
+            RateCurrentCard(hwnd, Rating::Bad);
             break;
         case HOTKEY_ID_RATE_MEH:
-            RateCurrentCard(Rating::Meh);
+            RateCurrentCard(hwnd, Rating::Meh);
             break;
         case HOTKEY_ID_RATE_GOOD:
-            RateCurrentCard(Rating::Good);
+            RateCurrentCard(hwnd, Rating::Good);
             break;
         case HOTKEY_ID_EXIT:
             PostQuitMessage(0);
             break;
+        }
+        break;
+    }
+    case WM_TIMER: {
+        if (wParam == TIMER_ID_NEXT_CARD) {
+            KillTimer(hwnd, TIMER_ID_NEXT_CARD);
+            ShowCurrentQuestion();
         }
         break;
     }
@@ -328,6 +391,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DeleteObject(g_state.hFont);
             g_state.hFont = nullptr;
         }
+        KillTimer(hwnd, TIMER_ID_NEXT_CARD);
         PostQuitMessage(0);
         break;
     default:
